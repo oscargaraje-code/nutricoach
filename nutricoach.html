@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NutriCoach</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111; font-family: 'DM Sans', sans-serif; color: #f0f0f0; }
+  input, textarea, button { font-family: 'DM Sans', sans-serif; }
+  input:focus, textarea:focus { outline: 2px solid #c8f06a; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: #111; }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const { useState, useEffect } = React;
+
+const KEYS = { profile: "cn_profile", pantry: "cn_pantry" };
+const load = k => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } };
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+const CAT_COLORS = { proteína:"#e8543a", carbohidrato:"#d4a843", verdura:"#4caf78", fruta:"#e07b54", lácteo:"#7ab8d4", grasa:"#b39ddb", otro:"#90a4ae" };
+const CAT_ICONS  = { proteína:"🥩", carbohidrato:"🌾", verdura:"🥦", fruta:"🍎", lácteo:"🥛", grasa:"🫙", otro:"📦" };
+
+async function callClaude(messages, system="") {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1500, system, messages })
+  });
+  const data = await res.json();
+  return data.content?.find(b=>b.type==="text")?.text || "";
+}
+
+async function analyzeTicket(base64, mediaType) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({
+      model:"claude-sonnet-4-20250514", max_tokens:1000,
+      messages:[{ role:"user", content:[
+        { type:"image", source:{ type:"base64", media_type:mediaType, data:base64 } },
+        { type:"text", text:`Analiza este ticket o imagen de alimentos. Devuelve ÚNICAMENTE un array JSON con objetos {nombre,cantidad,unidad,categoria}. Categorías: proteína, carbohidrato, verdura, fruta, lácteo, grasa, otro. Unidades estándar: g,kg,ml,l,uds. Sin texto extra, solo el array JSON.` }
+      ]}]
+    })
+  });
+  const data = await res.json();
+  const txt = data.content?.find(b=>b.type==="text")?.text || "[]";
+  try { return JSON.parse(txt.replace(/```json|```/g,"").trim()); } catch { return []; }
+}
+
+// ── ONBOARDING ──────────────────────────────────────────────────
+function Onboarding({ onDone }) {
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState({ nombre:"", edad:"", peso:"", altura:"", actividad:"moderado", objetivo:"ganar músculo", restricciones:"", notas:"" });
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const steps = [
+    { title:"Tu perfil", content:
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <Field label="Nombre" value={form.nombre} onChange={v=>set("nombre",v)} placeholder="Tu nombre" />
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+          <Field label="Edad" value={form.edad} onChange={v=>set("edad",v)} placeholder="años" type="number" />
+          <Field label="Peso kg" value={form.peso} onChange={v=>set("peso",v)} placeholder="kg" type="number" />
+          <Field label="Altura cm" value={form.altura} onChange={v=>set("altura",v)} placeholder="cm" type="number" />
+        </div>
+      </div>
+    },
+    { title:"Estilo de vida", content:
+      <div style={{display:"flex",flexDirection:"column",gap:18}}>
+        <div>
+          <div style={labelSt}>Nivel de actividad</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:6}}>
+            {["sedentario","ligero","moderado","activo","muy activo"].map(a=>(
+              <button key={a} onClick={()=>set("actividad",a)}
+                style={{...chipBtn, background:form.actividad===a?"#c8f06a":"#1e1e1e", color:form.actividad===a?"#111":"#aaa"}}>
+                {a.charAt(0).toUpperCase()+a.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={labelSt}>Objetivo principal</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:6}}>
+            {["ganar músculo","perder grasa","mantener peso","comer sano"].map(o=>(
+              <button key={o} onClick={()=>set("objetivo",o)}
+                style={{...chipBtn, background:form.objetivo===o?"#c8f06a":"#1e1e1e", color:form.objetivo===o?"#111":"#aaa"}}>
+                {o.charAt(0).toUpperCase()+o.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    },
+    { title:"Preferencias", content:
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <Field label="Alergias / intolerancias" value={form.restricciones} onChange={v=>set("restricciones",v)} placeholder="Ej: sin gluten, nueces..." />
+        <Field label="Otras notas (gustos, dislikes...)" value={form.notas} onChange={v=>set("notas",v)} placeholder="Ej: odio el brócoli..." multiline />
+      </div>
+    }
+  ];
+
+  const canNext = step===0 ? (form.nombre && form.edad && form.peso) : true;
+
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"#161616",border:"1px solid #222",borderRadius:16,padding:28,width:"100%",maxWidth:440}}>
+        <div style={{display:"flex",gap:6,marginBottom:22}}>
+          {steps.map((_,i)=><div key={i} style={{height:3,flex:1,borderRadius:2,background:i<=step?"#c8f06a":"#2a2a2a"}} />)}
+        </div>
+        <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,color:"#f0f0f0",marginBottom:18}}>
+          {steps[step].title}
+        </div>
+        {steps[step].content}
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:26}}>
+          {step>0
+            ? <button style={secBtn} onClick={()=>setStep(s=>s-1)}>← Atrás</button>
+            : <div/>}
+          {step<steps.length-1
+            ? <button style={{...primBtn,opacity:canNext?1:0.4}} disabled={!canNext} onClick={()=>setStep(s=>s+1)}>Siguiente →</button>
+            : <button style={primBtn} onClick={()=>{save(KEYS.profile,form);onDone(form);}}>Empezar →</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN APP ─────────────────────────────────────────────────────
+function App() {
+  const [profile, setProfile] = useState(()=>load(KEYS.profile));
+  const [pantry,  setPantry]  = useState(()=>load(KEYS.pantry)||[]);
+  const [tab, setTab] = useState("inicio");
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState("");
+  const [recipes, setRecipes] = useState([]);
+  const [genLoading, setGenLoading] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [editId, setEditId] = useState(null);
+
+  useEffect(()=>{ save(KEYS.pantry, pantry); }, [pantry]);
+
+  if (!profile) return <Onboarding onDone={p=>setProfile(p)} />;
+
+  const handleTicket = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    setUploading(true); setUploadMsg("Analizando con IA...");
+    try {
+      const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(file); });
+      const items = await analyzeTicket(b64, file.type);
+      if (!items.length) { setUploadMsg("No se detectaron productos."); }
+      else {
+        setPantry(prev=>{
+          const up=[...prev];
+          items.forEach(item=>{
+            const idx=up.findIndex(p=>p.nombre.toLowerCase()===item.nombre.toLowerCase());
+            if (idx>=0) up[idx].cantidad+=item.cantidad;
+            else up.push({...item,id:Date.now()+Math.random()});
+          });
+          return up;
+        });
+        setUploadMsg(`✓ ${items.length} productos añadidos`);
+        setTab("despensa");
+      }
+    } catch { setUploadMsg("Error al analizar la imagen."); }
+    finally { setUploading(false); setTimeout(()=>setUploadMsg(""),4000); }
+    e.target.value="";
+  };
+
+  const generateRecipes = async () => {
+    if (!pantry.length) return;
+    setGenLoading(true); setRecipes([]); setSelected(null);
+    const system=`Eres nutricionista experto. Devuelve ÚNICAMENTE un array JSON con exactamente 3 recetas. Cada receta: {nombre,descripcion,ingredientes:[{nombre,cantidad,unidad}],pasos:[string],faltantes:[string],calorias,proteinas,carbohidratos,grasas}. Sin texto extra.`;
+    const despensa=pantry.map(p=>`${p.nombre}: ${p.cantidad}${p.unidad}`).join(", ");
+    const prompt=`Perfil: ${profile.nombre}, ${profile.edad}a, ${profile.peso}kg, objetivo: ${profile.objetivo}, actividad: ${profile.actividad}. Restricciones: ${profile.restricciones||"ninguna"}. Notas: ${profile.notas||"ninguna"}.\nDespensa: ${despensa}.\nCrea 3 recetas para hoy usando principalmente ingredientes disponibles.`;
+    try {
+      const txt=await callClaude([{role:"user",content:prompt}],system);
+      const parsed=JSON.parse(txt.replace(/```json|```/g,"").trim());
+      setRecipes(parsed);
+    } catch { setRecipes([]); }
+    setGenLoading(false);
+  };
+
+  const cookRecipe = recipe => {
+    setPantry(prev=>{
+      const up=[...prev];
+      recipe.ingredientes.forEach(ing=>{
+        const idx=up.findIndex(p=>p.nombre.toLowerCase()===ing.nombre.toLowerCase());
+        if (idx>=0) up[idx].cantidad=Math.max(0,up[idx].cantidad-ing.cantidad);
+      });
+      return up.filter(p=>p.cantidad>0);
+    });
+    setSelected(null); setTab("despensa");
+  };
+
+  const byCategory = pantry.reduce((acc,p)=>{ if(!acc[p.categoria])acc[p.categoria]=[]; acc[p.categoria].push(p); return acc; },{});
+
+  return (
+    <div style={{minHeight:"100vh",background:"#111",maxWidth:520,margin:"0 auto"}}>
+
+      {/* Header */}
+      <header style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 20px",borderBottom:"1px solid #1e1e1e",background:"#111",position:"sticky",top:0,zIndex:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:20}}>🥗</span>
+          <span style={{fontFamily:"'Playfair Display',serif",fontSize:17,color:"#c8f06a",fontWeight:700}}>NutriCoach</span>
+        </div>
+        <div style={{fontSize:12,color:"#666"}}>
+          {profile.nombre} · <span style={{color:"#888"}}>{profile.objetivo}</span>
+        </div>
+      </header>
+
+      {/* Nav */}
+      <nav style={{display:"flex",borderBottom:"1px solid #1e1e1e",background:"#111",position:"sticky",top:49,zIndex:9}}>
+        {[["inicio","🏠","Inicio"],["despensa","🗄️","Despensa"],["recetas","👨‍🍳","Recetas"]].map(([id,icon,label])=>(
+          <button key={id} onClick={()=>{setTab(id);setSelected(null);}}
+            style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"10px 0",background:"none",border:"none",cursor:"pointer",borderBottom:tab===id?"2px solid #c8f06a":"2px solid transparent",color:tab===id?"#c8f06a":"#666",fontSize:11,transition:"color 0.2s"}}>
+            <span style={{fontSize:18}}>{icon}</span>{label}
+          </button>
+        ))}
+      </nav>
+
+      <main style={{padding:"18px 16px 60px"}}>
+
+        {/* ── INICIO ── */}
+        {tab==="inicio" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+
+            <div style={cardSt}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,color:"#f0f0f0",marginBottom:4}}>{profile.nombre}</div>
+                  <div style={{color:"#777",fontSize:13}}>{profile.edad} años · {profile.peso}kg{profile.altura?` · ${profile.altura}cm`:""}</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+                    <span style={{...chipSt,background:"#c8f06a22",color:"#c8f06a",border:"1px solid #c8f06a33"}}>{profile.objetivo}</span>
+                    <span style={{...chipSt,background:"#7ab8d422",color:"#7ab8d4",border:"1px solid #7ab8d433"}}>{profile.actividad}</span>
+                  </div>
+                </div>
+                <button onClick={()=>{save(KEYS.profile,null);setProfile(null);}} style={{background:"none",border:"none",color:"#444",cursor:"pointer",fontSize:12}}>editar</button>
+              </div>
+            </div>
+
+            <div style={cardSt}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:16,color:"#f0f0f0",marginBottom:8}}>Añadir compra</div>
+              <p style={{color:"#666",fontSize:13,marginBottom:14,lineHeight:1.5}}>Sube una foto del ticket — la IA detecta los productos automáticamente.</p>
+              <label style={{...primBtn,display:"inline-block",cursor:"pointer"}}>
+                {uploading?"Analizando...":"📷 Subir ticket"}
+                <input type="file" accept="image/*" onChange={handleTicket} style={{display:"none"}} disabled={uploading} />
+              </label>
+              {uploadMsg && <div style={{marginTop:12,fontSize:13,color:uploadMsg.startsWith("✓")?"#c8f06a":"#e8543a"}}>{uploadMsg}</div>}
+            </div>
+
+            <div style={cardSt}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:16,color:"#f0f0f0",marginBottom:10}}>Despensa</div>
+              {!pantry.length
+                ? <div style={{color:"#444",fontSize:13}}>Vacía — sube un ticket para empezar</div>
+                : <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+                    {Object.entries(pantry.reduce((a,p)=>{a[p.categoria]=(a[p.categoria]||0)+1;return a},{})).map(([cat,n])=>(
+                      <span key={cat} style={{...chipSt,background:CAT_COLORS[cat]+"22",color:CAT_COLORS[cat],border:`1px solid ${CAT_COLORS[cat]}44`}}>
+                        {CAT_ICONS[cat]} {cat} ({n})
+                      </span>
+                    ))}
+                  </div>}
+            </div>
+          </div>
+        )}
+
+        {/* ── DESPENSA ── */}
+        {tab==="despensa" && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,color:"#f0f0f0"}}>Despensa</div>
+              <label style={{...primBtn,cursor:"pointer",fontSize:12,padding:"7px 14px"}}>
+                + Ticket
+                <input type="file" accept="image/*" onChange={handleTicket} style={{display:"none"}} disabled={uploading} />
+              </label>
+            </div>
+            {uploading && <div style={{color:"#c8f06a",fontSize:13,marginBottom:12}}>Analizando ticket...</div>}
+            {uploadMsg && <div style={{marginBottom:12,fontSize:13,color:uploadMsg.startsWith("✓")?"#c8f06a":"#e8543a"}}>{uploadMsg}</div>}
+            {!pantry.length
+              ? <div style={{...cardSt,textAlign:"center",color:"#444",padding:40}}>Despensa vacía</div>
+              : Object.entries(byCategory).map(([cat,items])=>(
+                  <div key={cat} style={{marginBottom:20}}>
+                    <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:8}}>
+                      <span style={{fontSize:15}}>{CAT_ICONS[cat]}</span>
+                      <span style={{color:CAT_COLORS[cat],fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>{cat}</span>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                      {items.map(item=>(
+                        <div key={item.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:"#161616",borderRadius:8,border:"1px solid #1e1e1e",borderLeft:`3px solid ${CAT_COLORS[cat]}`}}>
+                          <span style={{color:"#ddd",fontSize:14,flex:1}}>{item.nombre}</span>
+                          {editId===item.id
+                            ? <input type="number" defaultValue={item.cantidad} autoFocus
+                                style={{width:70,background:"#1a1a1a",border:"1px solid #c8f06a",color:"#f0f0f0",borderRadius:4,padding:"2px 6px",fontSize:13}}
+                                onBlur={e=>{setPantry(p=>p.map(x=>x.id===item.id?{...x,cantidad:parseFloat(e.target.value)||0}:x).filter(x=>x.cantidad>0));setEditId(null);}}
+                                onKeyDown={e=>e.key==="Enter"&&e.target.blur()} />
+                            : <span onClick={()=>setEditId(item.id)} style={{color:"#777",fontSize:13,cursor:"pointer",minWidth:60,textAlign:"right"}} title="Click para editar">
+                                {item.cantidad}{item.unidad}
+                              </span>}
+                          <button onClick={()=>setPantry(p=>p.filter(x=>x.id!==item.id))}
+                            style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:18,lineHeight:1}}>×</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+          </div>
+        )}
+
+        {/* ── RECETAS lista ── */}
+        {tab==="recetas" && !selected && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,color:"#f0f0f0"}}>Recetas</div>
+              <button onClick={generateRecipes} disabled={genLoading||!pantry.length}
+                style={{...primBtn,opacity:(!pantry.length)?0.4:1,fontSize:13}}>
+                {genLoading?"Generando...":"✨ Generar"}
+              </button>
+            </div>
+            {genLoading && (
+              <div style={{...cardSt,textAlign:"center",padding:40}}>
+                <div style={{fontSize:28,marginBottom:10}}>🤖</div>
+                <div style={{color:"#888",fontSize:14}}>Creando recetas personalizadas...</div>
+              </div>
+            )}
+            {!genLoading && !recipes.length && (
+              <div style={{...cardSt,textAlign:"center",color:"#444",padding:40}}>
+                {!pantry.length?"Añade productos a la despensa primero":"Pulsa «Generar» para obtener recetas de hoy"}
+              </div>
+            )}
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              {recipes.map((r,i)=>(
+                <div key={i} style={{...cardSt,cursor:"pointer"}} onClick={()=>setSelected(r)}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                    <div>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:17,color:"#f0f0f0",marginBottom:3}}>{r.nombre}</div>
+                      <div style={{color:"#777",fontSize:13,lineHeight:1.4}}>{r.descripcion}</div>
+                    </div>
+                    <span style={{color:"#c8f06a",fontSize:18,marginLeft:10}}>→</span>
+                  </div>
+                  <div style={{display:"flex",gap:14}}>
+                    <Macro label="kcal" value={r.calorias} color="#e8543a"/>
+                    <Macro label="prot" value={r.proteinas+"g"} color="#4caf78"/>
+                    <Macro label="carbs" value={r.carbohidratos+"g"} color="#d4a843"/>
+                    <Macro label="grasa" value={r.grasas+"g"} color="#b39ddb"/>
+                  </div>
+                  {r.faltantes?.length>0 && (
+                    <div style={{marginTop:8,fontSize:12,color:"#e8543a"}}>⚠ Falta: {r.faltantes.join(", ")}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── RECETA detalle ── */}
+        {tab==="recetas" && selected && (
+          <div>
+            <button onClick={()=>setSelected(null)} style={{...secBtn,marginBottom:16}}>← Volver</button>
+            <div style={cardSt}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,color:"#f0f0f0",marginBottom:6}}>{selected.nombre}</div>
+              <div style={{color:"#777",fontSize:14,marginBottom:16,lineHeight:1.5}}>{selected.descripcion}</div>
+              <div style={{display:"flex",gap:14,marginBottom:20}}>
+                <Macro label="kcal" value={selected.calorias} color="#e8543a"/>
+                <Macro label="prot" value={selected.proteinas+"g"} color="#4caf78"/>
+                <Macro label="carbs" value={selected.carbohidratos+"g"} color="#d4a843"/>
+                <Macro label="grasa" value={selected.grasas+"g"} color="#b39ddb"/>
+              </div>
+
+              <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Ingredientes</div>
+              {selected.ingredientes.map((ing,i)=>{
+                const ok=pantry.some(p=>p.nombre.toLowerCase()===ing.nombre.toLowerCase());
+                return (
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid #1a1a1a"}}>
+                    <span style={{color:ok?"#ddd":"#e8543a",fontSize:14}}>{!ok&&"⚠ "}{ing.nombre}</span>
+                    <span style={{color:"#777",fontSize:13}}>{ing.cantidad}{ing.unidad}</span>
+                  </div>
+                );
+              })}
+
+              {selected.faltantes?.length>0 && (
+                <div style={{marginTop:12,padding:"10px 14px",background:"#e8543a11",border:"1px solid #e8543a33",borderRadius:8,fontSize:13,color:"#e8543a"}}>
+                  Necesitas comprar: {selected.faltantes.join(", ")}
+                </div>
+              )}
+
+              <div style={{fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:1,margin:"20px 0 10px"}}>Preparación</div>
+              {selected.pasos.map((paso,i)=>(
+                <div key={i} style={{display:"flex",gap:12,marginBottom:12,alignItems:"flex-start"}}>
+                  <div style={{minWidth:24,height:24,borderRadius:"50%",background:"#c8f06a22",color:"#c8f06a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,flexShrink:0}}>{i+1}</div>
+                  <p style={{color:"#ccc",fontSize:14,lineHeight:1.6,margin:0}}>{paso}</p>
+                </div>
+              ))}
+
+              <button onClick={()=>cookRecipe(selected)} style={{...primBtn,width:"100%",marginTop:22,textAlign:"center"}}>
+                ✓ Marcar como cocinado — descontar de despensa
+              </button>
+            </div>
+          </div>
+        )}
+
+      </main>
+    </div>
+  );
+}
+
+function Field({label,value,onChange,placeholder,type="text",multiline}) {
+  return (
+    <div>
+      <div style={labelSt}>{label}</div>
+      {multiline
+        ? <textarea value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+            style={{...inputSt,height:76,resize:"vertical"}} />
+        : <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+            style={inputSt} />}
+    </div>
+  );
+}
+
+function Macro({label,value,color}) {
+  return (
+    <div style={{textAlign:"center"}}>
+      <div style={{fontSize:15,fontWeight:700,color}}>{value}</div>
+      <div style={{fontSize:11,color:"#555"}}>{label}</div>
+    </div>
+  );
+}
+
+const primBtn = {background:"#c8f06a",color:"#111",border:"none",borderRadius:8,padding:"10px 18px",fontWeight:700,fontSize:14,cursor:"pointer"};
+const secBtn  = {background:"#1e1e1e",color:"#aaa",border:"1px solid #2a2a2a",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer"};
+const chipBtn = {border:"1px solid #2a2a2a",borderRadius:8,padding:"8px 12px",fontSize:13,cursor:"pointer",transition:"all 0.15s"};
+const chipSt  = {padding:"4px 10px",borderRadius:20,fontSize:12,fontWeight:500};
+const cardSt  = {background:"#161616",border:"1px solid #1e1e1e",borderRadius:12,padding:16};
+const labelSt = {fontSize:11,color:"#777",marginBottom:5,textTransform:"uppercase",letterSpacing:0.5};
+const inputSt = {width:"100%",background:"#1a1a1a",border:"1px solid #2a2a2a",borderRadius:8,padding:"10px 12px",color:"#f0f0f0",fontSize:14,boxSizing:"border-box"};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
